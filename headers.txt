@@ -1,0 +1,2 @@
+User-Agent Mozilla/5.0
+Authorization Basic fake-digest==

@@ -1,0 +1,14 @@
+{
+    "appID": "1234567890",
+    "channel": "e-service",
+    "CreatedBy": "ES",
+    "submDateTime": "20221220",
+    "updatedBy": "",
+    "updatedDateTime": "",
+    "paymentPage": {
+        "amtPaid": "650",
+        "payPlatform": "-Payment",
+        "payMethod": "Master",
+        "payDateTime": "20221220"
+    }
+}
