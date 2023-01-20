@@ -13,11 +13,16 @@ import java.security.KeyManagementException;
 import java.security.NoSuchAlgorithmException;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.Scanner;
+import java.util.SortedMap;
+import java.util.TreeMap;
+import java.util.Map.Entry;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.logging.Level;
@@ -37,6 +42,10 @@ import org.apache.commons.cli.HelpFormatter;
 import org.apache.commons.cli.Option;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
+import org.apache.commons.math3.stat.descriptive.DescriptiveStatistics;
+
+import com.mitchtalmadge.asciidata.graph.ASCIIGraph;
+import com.mitchtalmadge.asciidata.table.ASCIITable;
 
 public class HttpsInjector {
 
@@ -63,6 +72,7 @@ public class HttpsInjector {
         int threadCount = 0;
         float maxDuration = 0.0f;
         HashMap<String,String> headers = new HashMap<>();
+        TreeMap<Integer, ThreadRecord> results = new TreeMap<>();
 
         // Define CLI options to accept.
         Options options = new Options();
@@ -79,6 +89,7 @@ public class HttpsInjector {
         options.addOption(new Option("h", optHeaders, true,
             "Optional Key-Value file name of HTTP Headers to use on every Request."));
 
+        // A block of unnecessary quotes :-)
         String[] quotes = {
             "'I have a dream' - Martin Luther King Jr.",
             "'The only way to do great work is to love what you do' - Steve Jobs",
@@ -92,6 +103,7 @@ public class HttpsInjector {
             "'The best and most beautiful things in the world cannot be seen or even touched - they must be felt with the heart' - Helen Keller"
         };
 
+        // Parsing the command line inputs.
         CommandLineParser parser = new DefaultParser();
         CommandLine cli = null;
         try {
@@ -134,8 +146,8 @@ public class HttpsInjector {
             System.exit(1);
         }
 
-        if(logger.isLoggable(Level.WARNING)) {
-            logger.warning("Starting Execution.");
+        if(logger.isLoggable(Level.INFO)) {
+            logger.info("Starting Execution.");
         }
 
         // Build thread pool.
@@ -143,13 +155,13 @@ public class HttpsInjector {
         HttpsInjector httpsInjector = new HttpsInjector();
         for(int i = 1; i<=threadCount; i++) {
             try {
-                HttpsInjector.RunThread worker = httpsInjector.createRunThread(i, service, jsonFile, sleepTime, maxDuration, headers);
-                if(logger.isLoggable(Level.WARNING)) {
-                    logger.warning("Spawn thread "+i);
+                HttpsInjector.RunThread worker = httpsInjector.createRunThread(i, service, jsonFile, sleepTime, maxDuration, headers, results);
+                if(logger.isLoggable(Level.INFO)) {
+                    logger.info("Spawn thread "+i);
                 }
                 executor.execute(worker);
-                if(logger.isLoggable(Level.WARNING)) {
-                    logger.warning("Started thread "+i);
+                if(logger.isLoggable(Level.INFO)) {
+                    logger.info("Started thread "+i);
                 }
             } catch (IOException e) {
                 logger.log(Level.SEVERE, e.getMessage(), e);
@@ -161,9 +173,57 @@ public class HttpsInjector {
         // Wait for threads to finish.
         while (!executor.isTerminated());
 
-        if(logger.isLoggable(Level.WARNING)) {
-            logger.warning("Completed execution");
+        if(logger.isLoggable(Level.INFO)) {
+            logger.info("Completed execution");
         }
+
+        // Collecting Statistics
+        String[][] tableCells = new String[threadCount][3];
+        ArrayList<Double> combined90 = new ArrayList<>();
+        ArrayList<Double> combined95 = new ArrayList<>();
+        ArrayList<Double> combinedAll = new ArrayList<>();
+        for(Entry<Integer, ThreadRecord> entry : results.entrySet()) {
+            int index = entry.getKey() -1;
+            tableCells[index][0] = String.valueOf(entry.getKey());
+            combinedAll.addAll(entry.getValue().getResponses());
+            DescriptiveStatistics stats = new DescriptiveStatistics(entry.getValue().getResponses().stream().mapToDouble(Number::doubleValue).toArray());
+            double percentile90 = stats.getPercentile(90);
+            double percentile95 = stats.getPercentile(95);
+            combined90.add(percentile90);
+            combined95.add(percentile95);
+            tableCells[index][1] = String.valueOf(percentile90);
+            tableCells[index][2] = String.valueOf(percentile95);
+        }
+
+        // Printing Graph
+        double[] toPlot = combined90.stream().mapToDouble(Number::doubleValue).toArray();
+        if(logger.isLoggable(Level.INFO)) {
+            logger.info("\n90th Percentile Response across Threads\n"+ASCIIGraph.fromSeries(toPlot).plot());
+        }
+        toPlot = combined95.stream().mapToDouble(Number::doubleValue).toArray();
+        if(logger.isLoggable(Level.INFO)) {
+            logger.info("\n95th Percentile Response across Threads\n"+ASCIIGraph.fromSeries(toPlot).plot());
+        }
+
+        // Printing Table
+        String[] tableHeader = new String[]{"Thread-ID", "90%-tile (ms)", "95%-tile (ms)"};
+        if(logger.isLoggable(Level.INFO)) {
+            logger.info("\nStatistics of each thread\n"+ASCIITable.fromData(tableHeader, tableCells).toString());
+        }
+
+        tableHeader = new String[]{"Overall", "90%-tile (ms)", "95%-tile (ms)"};
+        DescriptiveStatistics overallStats = new DescriptiveStatistics(combinedAll.stream().mapToDouble(Number::doubleValue).toArray());
+        tableCells = new String[][] {
+            {
+                "Overall", 
+                String.valueOf(overallStats.getPercentile(90)), 
+                String.valueOf(overallStats.getPercentile(95)) 
+            }
+        };
+        if(logger.isLoggable(Level.INFO)) {
+            logger.info("\nOverall Statistics\n"+ASCIITable.fromData(tableHeader, tableCells).toString());
+        }
+
     }
 
     private static void printExampleHelp(Options options, String[] quotes, int messageId) {
@@ -180,8 +240,8 @@ public class HttpsInjector {
                 + "\n=============================================================================================================");
     }
 
-    public RunThread createRunThread(int threadId, URI serviceUri, Path jsonFile, int sleepSeconds, float maxDurationHour, Map<String,String> headers) throws IOException {
-        return new RunThread(threadId, serviceUri, jsonFile, sleepSeconds, maxDurationHour, headers);
+    public RunThread createRunThread(int threadId, URI serviceUri, Path jsonFile, int sleepSeconds, float maxDurationHour, Map<String,String> headers, SortedMap<Integer, ThreadRecord> results) throws IOException {
+        return new RunThread(threadId, serviceUri, jsonFile, sleepSeconds, maxDurationHour, headers, results);
     }
 
     /**
@@ -214,6 +274,7 @@ public class HttpsInjector {
         private float maxDurationHour = 0.0f;
         private int threadId = 0;
         private Map<String,String> headers = null;
+        private SortedMap<Integer, ThreadRecord> results;
 
         private  Logger logger = Logger.getLogger(RunThread.class.getName());
         private Random random = new Random();
@@ -221,13 +282,14 @@ public class HttpsInjector {
 
         private long startTime = (new Date()).getTime();
 
-        public RunThread(int threadId, URI serviceUri, Path jsonFile, int sleepSeconds, float maxDurationHour, Map<String,String> headers) throws IOException {
+        public RunThread(int threadId, URI serviceUri, Path jsonFile, int sleepSeconds, float maxDurationHour, Map<String,String> headers, SortedMap<Integer, ThreadRecord> results) throws IOException {
             this.threadId = threadId;
             this.serviceURI = serviceUri;
             this.jsonString = Files.readString(jsonFile);
             this.sleepSeconds = sleepSeconds;
             this.maxDurationHour = maxDurationHour;
             this.headers = headers;
+            this.results = results;
 
             trustAllCerts = new TrustManager[] {
                 new X509TrustManager() {
@@ -258,6 +320,8 @@ public class HttpsInjector {
             long runDuration = Math.round(this.maxDurationHour * 1000l * 60l * 60l);
             boolean stop = false;
 
+            ThreadRecord threadRecord = new ThreadRecord(this.threadId);
+
             SSLContext sc = null;
             try {
                 sc = SSLContext.getInstance("TLSv1.2");
@@ -274,8 +338,8 @@ public class HttpsInjector {
             // All hosts will be valid
             HttpsURLConnection.setDefaultHostnameVerifier(validHosts);
 
-            if(logger.isLoggable(Level.WARNING)) {
-                logger.warning("Starting Thread ["+this.threadId+"]");
+            if(logger.isLoggable(Level.INFO)) {
+                logger.info("Starting Thread ["+this.threadId+"]");
             }
 
             // Iterate until end.
@@ -283,8 +347,8 @@ public class HttpsInjector {
                 // Check if it is time to end.
                 long currentTime = (new Date()).getTime();
                 if(stop || ((startTime + runDuration) < currentTime) ) {
-                    if(logger.isLoggable(Level.WARNING)) {
-                        logger.warning("Stopping Thread ["+this.threadId+"]");
+                    if(logger.isLoggable(Level.INFO)) {
+                        logger.info("Stopping Thread ["+this.threadId+"]");
                     }
                     break; // end the running thread.
                 }
@@ -293,8 +357,8 @@ public class HttpsInjector {
                 try {
                     StringBuilder logStmt = new StringBuilder();
                     logStmt.append("Thread [").append(this.threadId).append("] sending");
-                    if(logger.isLoggable(Level.WARNING)) {
-                        logger.warning(logStmt.toString());
+                    if(logger.isLoggable(Level.INFO)) {
+                        logger.info(logStmt.toString());
                     }
                     HttpsURLConnection httpsConnection = (HttpsURLConnection) this.serviceURI.toURL().openConnection();
                     // add request header
@@ -316,8 +380,10 @@ public class HttpsInjector {
 
                     long newTime = (new Date()).getTime();
                     logStmt = new StringBuilder();
-                    logStmt.append("Thread [").append(this.threadId).append("] response code [").append(responseCode).append("] Elapsed [").append(newTime-currentTime).append("]ms.");
-                    if(logger.isLoggable(Level.WARNING)) {
+                    long elapsedTime = newTime-currentTime;
+                    threadRecord.addResponse(elapsedTime);
+                    logStmt.append("Thread [").append(this.threadId).append("] response code [").append(responseCode).append("] Elapsed [").append(elapsedTime).append("]ms.");
+                    if(logger.isLoggable(Level.INFO)) {
                         logger.info(logStmt.toString());
                     }
 
@@ -334,10 +400,36 @@ public class HttpsInjector {
                 }
             }
 
-            if(logger.isLoggable(Level.WARNING)) {
-                logger.warning("Ended Thread ["+this.threadId+"]");
+            this.results.put(threadRecord.getThreadId(), threadRecord);
+
+            if(logger.isLoggable(Level.INFO)) {
+                logger.info("Ended Thread ["+this.threadId+"]");
             }
 
+        }
+    }
+
+    /**
+     * To store the runtime records of each Thread.
+     */
+    private class ThreadRecord {
+        private int threadId;
+        private ArrayList<Double> responses = new ArrayList<>();
+
+        public ThreadRecord (int threadId) {
+            this.threadId = threadId;
+        }
+
+        public int getThreadId() {
+            return this.threadId;
+        }
+
+        public void addResponse(double response) {
+            this.responses.add(response);
+        }
+
+        public List<Double> getResponses() {
+            return this.responses;
         }
     }
 }
