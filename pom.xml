@@ -4,7 +4,7 @@
   <groupId>sg.gov.ica.test</groupId>
   <artifactId>httpsloadinjector</artifactId>
   <packaging>jar</packaging>
-  <version>1.1.0</version>
+  <version>1.1.1</version>
   <name>httpsLoadInjector</name>
   <url>http://maven.apache.org</url>
 

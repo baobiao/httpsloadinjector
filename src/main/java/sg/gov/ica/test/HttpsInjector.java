@@ -388,7 +388,7 @@ public class HttpsInjector {
                     }
 
                     // Put thread to sleep.
-                    Thread.sleep(this.sleepSeconds * 1000l + random.nextLong(1000l));
+                    Thread.sleep(this.sleepSeconds * 1000l + random.nextInt(1000)); // Change from nextLong(bound) to nextInt(bound) to support Java 11.
 
                 } catch (IOException e) {
                     logger.log(Level.SEVERE, e.getMessage(), e);
