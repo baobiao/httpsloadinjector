@@ -5,6 +5,7 @@ import java.io.DataOutputStream;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.math.RoundingMode;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.file.Files;
@@ -13,6 +14,7 @@ import java.security.KeyManagementException;
 import java.security.NoSuchAlgorithmException;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
+import java.text.DecimalFormat;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
@@ -27,6 +29,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.stream.DoubleStream;
 
 import javax.net.ssl.HostnameVerifier;
 import javax.net.ssl.HttpsURLConnection;
@@ -73,6 +76,9 @@ public class HttpsInjector {
         float maxDuration = 0.0f;
         HashMap<String,String> headers = new HashMap<>();
         TreeMap<Integer, ThreadRecord> results = new TreeMap<>();
+
+        DecimalFormat df = new DecimalFormat("0");
+        df.setRoundingMode(RoundingMode.DOWN);
 
         // Define CLI options to accept.
         Options options = new Options();
@@ -178,9 +184,10 @@ public class HttpsInjector {
         }
 
         // Collecting Statistics
-        String[][] tableCells = new String[threadCount][3];
+        String[][] tableCells = new String[threadCount][4];
         ArrayList<Double> combined90 = new ArrayList<>();
         ArrayList<Double> combined95 = new ArrayList<>();
+        ArrayList<Double> combined99 = new ArrayList<>();
         ArrayList<Double> combinedAll = new ArrayList<>();
         for(Entry<Integer, ThreadRecord> entry : results.entrySet()) {
             int index = entry.getKey() -1;
@@ -189,10 +196,13 @@ public class HttpsInjector {
             DescriptiveStatistics stats = new DescriptiveStatistics(entry.getValue().getResponses().stream().mapToDouble(Number::doubleValue).toArray());
             double percentile90 = stats.getPercentile(90);
             double percentile95 = stats.getPercentile(95);
+            double percentile99 = stats.getPercentile(99);
             combined90.add(percentile90);
             combined95.add(percentile95);
-            tableCells[index][1] = String.valueOf(percentile90);
-            tableCells[index][2] = String.valueOf(percentile95);
+            combined99.add(percentile99);
+            tableCells[index][1] = df.format(percentile90);
+            tableCells[index][2] = df.format(percentile95);
+            tableCells[index][3] = df.format(percentile99);
         }
 
         // Printing Graph
@@ -204,20 +214,28 @@ public class HttpsInjector {
         if(logger.isLoggable(Level.INFO)) {
             logger.info("\n95th Percentile Response across Threads\n"+ASCIIGraph.fromSeries(toPlot).plot());
         }
+        toPlot = combined99.stream().mapToDouble(Number::doubleValue).toArray();
+        if(logger.isLoggable(Level.INFO)) {
+            logger.info("\n99th Percentile Response across Threads\n"+ASCIIGraph.fromSeries(toPlot).plot());
+        }
 
         // Printing Table
-        String[] tableHeader = new String[]{"Thread-ID", "90%-tile (ms)", "95%-tile (ms)"};
+        String[] tableHeader = new String[]{"Thread-ID", "90% (ms)", "95% (ms)", "99% (ms)"};
         if(logger.isLoggable(Level.INFO)) {
             logger.info("\nStatistics of each thread\n"+ASCIITable.fromData(tableHeader, tableCells).toString());
         }
 
-        tableHeader = new String[]{"Overall", "90%-tile (ms)", "95%-tile (ms)"};
+        tableHeader = new String[]{"Executions", "Avg (ms)", "90% (ms)", "95% (ms)", "99% (ms)", "Min (ms)", "Max (ms)"};
         DescriptiveStatistics overallStats = new DescriptiveStatistics(combinedAll.stream().mapToDouble(Number::doubleValue).toArray());
         tableCells = new String[][] {
             {
-                "Overall", 
-                String.valueOf(overallStats.getPercentile(90)), 
-                String.valueOf(overallStats.getPercentile(95)) 
+                String.valueOf(combinedAll.size()), 
+                df.format(combinedAll.stream().mapToDouble(Number::doubleValue).sum() / combinedAll.size()), 
+                df.format(overallStats.getPercentile(90)), 
+                df.format(overallStats.getPercentile(95)),
+                df.format(overallStats.getPercentile(99)), 
+                df.format(combinedAll.stream().mapToDouble(Number::doubleValue).min().getAsDouble()), 
+                df.format(combinedAll.stream().mapToDouble(Number::doubleValue).max().getAsDouble())
             }
         };
         if(logger.isLoggable(Level.INFO)) {
